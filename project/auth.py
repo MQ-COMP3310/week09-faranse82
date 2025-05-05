@@ -1,8 +1,11 @@
+import base64
+import hashlib
 from flask import Blueprint, render_template, request, flash, redirect, url_for
 from flask_login import login_user, login_required, logout_user
 from sqlalchemy import text
 from .models import User
 from . import db, app
+import bcrypt
 
 auth = Blueprint('auth', __name__)
 
@@ -16,16 +19,18 @@ def login_post():
     password = request.form.get('password')
     remember = True if request.form.get('remember') else False
 
+    # Use SQLAlchemy ORM to prevent SQL injection
     user = User.query.filter_by(email=email).first()
 
-    # check if the user actually exists
-    # take the user-supplied password and compare it with the stored password
-    if not user or not (user.password == password):
+    # Check if user exists and verify password with bcrypt
+    if not user or not bcrypt.checkpw(
+            base64.b64encode(hashlib.sha256(password.encode()).digest()),
+            user.password):
         flash('Please check your login details and try again.')
         app.logger.warning("User login failed")
-        return redirect(url_for('auth.login')) # if the user doesn't exist or password is wrong, reload the page
+        return redirect(url_for('auth.login'))
 
-    # if the above check passes, then we know the user has the right credentials
+    # If authentication passes, login the user
     login_user(user, remember=remember)
     return redirect(url_for('main.profile'))
 
@@ -38,26 +43,32 @@ def signup_post():
     email = request.form.get('email')
     name = request.form.get('name')
     password = request.form.get('password')
-
-    user = db.session.execute(text('select * from user where email = "' + email +'"')).all()
-    if len(user) > 0: # if a user is found, we want to redirect back to signup page so user can try again
-        flash('Email address already exists')  # 'flash' function stores a message accessible in the template code.
+    
+    # Check if user already exists using SQLAlchemy ORM
+    user = User.query.filter_by(email=email).first()
+    
+    if user:  # If a user is found with this email address
+        flash('Email address already exists')
         app.logger.debug("User email already exists")
         return redirect(url_for('auth.signup'))
-
-    # create a new user with the form data. TODO: Hash the password so the plaintext version isn't saved.
-    new_user = User(email=email, name=name, password=password)
-
-    # add the new user to the database
+    
+    # Hash the password properly
+    password_hash = bcrypt.hashpw(
+        base64.b64encode(hashlib.sha256(password.encode()).digest()),
+        bcrypt.gensalt()
+    )
+    
+    # Create a new user with the form data
+    new_user = User(email=email, name=name, password=password_hash)
+    
+    # Add the new user to the database
     db.session.add(new_user)
     db.session.commit()
-
+    
     return redirect(url_for('auth.login'))
 
 @auth.route('/logout')
 @login_required
 def logout():
-    logout_user();
+    logout_user()
     return redirect(url_for('main.index'))
-
-# See https://www.digitalocean.com/community/tutorials/how-to-add-authentication-to-your-app-with-flask-login for more information
