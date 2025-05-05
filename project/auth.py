@@ -1,11 +1,9 @@
-import base64
-import hashlib
 from flask import Blueprint, render_template, request, flash, redirect, url_for
 from flask_login import login_user, login_required, logout_user
+from argon2 import PasswordHasher
 from sqlalchemy import text
 from .models import User
 from . import db, app
-import bcrypt
 
 auth = Blueprint('auth', __name__)
 
@@ -18,21 +16,33 @@ def login_post():
     email = request.form.get('email')
     password = request.form.get('password')
     remember = True if request.form.get('remember') else False
-
-    # Use SQLAlchemy ORM to prevent SQL injection
+    
+    # Initialize password hasher
+    ph = PasswordHasher()
+    
+    # Find user by email
     user = User.query.filter_by(email=email).first()
-
-    # Check if user exists and verify password with bcrypt
-    if not user or not bcrypt.checkpw(
-            base64.b64encode(hashlib.sha256(password.encode()).digest()),
-            user.password):
+    
+    # Check if user exists
+    if not user:
         flash('Please check your login details and try again.')
-        app.logger.warning("User login failed")
+        app.logger.warning("User login failed - user not found")
         return redirect(url_for('auth.login'))
-
-    # If authentication passes, login the user
-    login_user(user, remember=remember)
-    return redirect(url_for('main.profile'))
+    
+    # Verify password
+    try:
+        # Verify user's password hash against provided password
+        ph.verify(user.password, password)
+        
+        # If authentication passes, login the user
+        login_user(user, remember=remember)
+        return redirect(url_for('main.profile'))
+        
+    except Exception as e:
+        # Password verification failed
+        flash('Please check your login details and try again.')
+        app.logger.warning(f"User login failed - password verification: {str(e)}")
+        return redirect(url_for('auth.login'))
 
 @auth.route('/signup')
 def signup():
@@ -44,7 +54,7 @@ def signup_post():
     name = request.form.get('name')
     password = request.form.get('password')
     
-    # Check if user already exists using SQLAlchemy ORM
+    # Check if user already exists
     user = User.query.filter_by(email=email).first()
     
     if user:  # If a user is found with this email address
@@ -52,14 +62,12 @@ def signup_post():
         app.logger.debug("User email already exists")
         return redirect(url_for('auth.signup'))
     
-    # Hash the password properly
-    password_hash = bcrypt.hashpw(
-        base64.b64encode(hashlib.sha256(password.encode()).digest()),
-        bcrypt.gensalt()
-    )
+    # Hash the password with Argon2
+    ph = PasswordHasher()
+    hashed_password = ph.hash(password)
     
     # Create a new user with the form data
-    new_user = User(email=email, name=name, password=password_hash)
+    new_user = User(email=email, name=name, password=hashed_password)
     
     # Add the new user to the database
     db.session.add(new_user)
